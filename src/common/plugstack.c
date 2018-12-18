@@ -2024,6 +2024,42 @@ spank_err_t spank_get_item(spank_t spank, spank_item_t item, ...)
 		else
 			*p2uint32 = 0;
 		break;
+	case S_JOB_ARRAY_ID:
+		p2uint32 = va_arg(vargs, uint32_t *);
+		if (spank->stack->type == S_TYPE_LOCAL) {
+			*p2uint32 = 0;
+			rc = ESPANK_NOT_AVAIL;
+		} else if (spank->stack->type == S_TYPE_REMOTE) {
+			/* array job id can be 0 for N/A */
+			if(slurmd_job->array_job_id == NO_VAL ||
+			   slurmd_job->array_job_id == 0) {
+				*p2uint32 = 0;
+				rc = ESPANK_NOEXIST;
+			} else {
+				*p2uint32 = slurmd_job->array_job_id;
+			}
+		} else if (spank->stack->type == S_TYPE_JOB_SCRIPT) {
+			*p2uint32 = 0;
+			rc = ESPANK_NOT_AVAIL;
+		}
+		break;
+	case S_JOB_ARRAY_TASK_ID:
+		p2uint32 = va_arg(vargs, uint32_t *);
+		if (spank->stack->type == S_TYPE_LOCAL) {
+			*p2uint32 = 0;
+			rc = ESPANK_NOT_AVAIL;
+		} else if (spank->stack->type == S_TYPE_REMOTE) {
+			if(slurmd_job->array_task_id == NO_VAL) {
+				*p2uint32 = 0;
+				rc = ESPANK_NOEXIST;
+			} else {
+				*p2uint32 = slurmd_job->array_task_id;
+			}
+		} else if (spank->stack->type == S_TYPE_JOB_SCRIPT) {
+			*p2uint32 = 0;
+			rc = ESPANK_NOT_AVAIL;
+		}
+		break;
 	case S_JOB_NNODES:
 		p2uint32 = va_arg(vargs, uint32_t *);
 		if (spank->stack->type == S_TYPE_LOCAL) {
