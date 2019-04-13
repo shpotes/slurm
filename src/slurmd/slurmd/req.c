@@ -5820,6 +5820,10 @@ static char **_build_env(job_env_t *job_env)
 		xfree(job_env->user_name);
 
 	setenvf(&env, "SLURM_JOBID", "%u", job_env->jobid);
+
+	if (job_env->pack_jobid && (job_env->pack_jobid != NO_VAL))
+		setenvf(&env, "SLURM_PACK_JOB_ID", "%u", job_env->pack_jobid);
+
 	setenvf(&env, "SLURM_UID", "%u", job_env->uid);
 
 	if (job_env->node_list)
