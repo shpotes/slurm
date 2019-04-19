@@ -65,16 +65,16 @@ int run_test(spank_t sp, const char *caller)
 		return 0;
 	}
 
-	if ((rc = spank_get_item(sp, S_JOB_STEPID, &step_id)) != ESPANK_SUCCESS)
+	if ((rc = spank_get_item(sp, S_JOB_STEPID, &step_id)))
 		return rc;
-	if ((rc = spank_get_item(sp, S_JOB_ID, &job_id)) != ESPANK_SUCCESS)
+	if ((rc = spank_get_item(sp, S_JOB_ID, &job_id)))
 		return rc;
-	if ((rc = spank_get_item(sp, S_JOB_ARRAY_ID, &array_job_id)) != ESPANK_SUCCESS)
+	if ((rc = spank_get_item(sp, S_JOB_ARRAY_ID, &array_job_id)))
 		array_job_id = 0;
-	if ((rc = spank_get_item(sp, S_JOB_ARRAY_TASK_ID, &array_task_id)) != ESPANK_SUCCESS)
+	if ((rc = spank_get_item(sp, S_JOB_ARRAY_TASK_ID, &array_task_id)))
 		array_task_id = 0;
 
-	fprintf(fp, "%s spank_get_item: step_id=%d job_id=%d array_job_id=%d array_task_id=%d\n",
+	fprintf(fp, "%s spank_get_item: step_id=%u job_id=%u array_job_id=%u array_task_id=%u\n",
 			caller, step_id, job_id, array_job_id, array_task_id);
 
 	// Ask slurm about this job
@@ -85,14 +85,9 @@ int run_test(spank_t sp, const char *caller)
 	for (uint32_t i = 0; i < job_info->record_count; ++i) {
 		slurm_job_info_t *job = job_info->job_array + i;
 
-		//stop any -2 being printed
-		if(job->array_job_id == NO_VAL)
-			job->array_job_id = 0;
-		if(job->array_task_id == NO_VAL)
-			job->array_task_id = 0;
-
-		fprintf(fp, "%s load_job: step_id=%d job_id=%d array_job_id=%d array_task_id=%d\n",
-			caller, step_id, job->job_id, job->array_job_id, job->array_task_id);
+		fprintf(fp, "%s load_job: step_id=%u job_id=%u array_job_id=%u array_task_id=%u\n",
+			caller, step_id, job->job_id, job->array_job_id,
+			job->array_task_id);
 	}
 
 	fclose(fp);
