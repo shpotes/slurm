@@ -78,6 +78,7 @@
 #include "src/common/slurm_protocol_pack.h"
 #include "src/common/switch.h"
 #include "src/common/timers.h"
+#include "src/common/track_script.h"
 #include "src/common/tres_bind.h"
 #include "src/common/tres_frequency.h"
 #include "src/common/xassert.h"
@@ -190,7 +191,6 @@ static void _dump_job_state(struct job_record *dump_job_ptr, Buf buffer);
 static void _dump_job_fed_details(job_fed_details_t *fed_details_ptr,
 				  Buf buffer);
 static job_fed_details_t *_dup_job_fed_details(job_fed_details_t *src);
-static int _kill_ctld_script(void *object, void *x);
 static void _get_batch_job_dir_ids(List batch_dirs);
 static bool _get_whole_hetjob(void);
 static void _job_array_comp(struct job_record *job_ptr, bool was_running,
@@ -6106,11 +6106,9 @@ static int _job_complete(struct job_record *job_ptr, uid_t uid, bool requeue,
 	}
 
 	/* Check for and cleanup stuck scripts */
-	if (job_ptr->details && job_ptr->details->prolog_running) {
-		list_for_each(ctld_script_thd_list,
-			      (ListFindF) _kill_ctld_script,
-			      job_ptr);
-	}
+	if (job_ptr->details && job_ptr->details->prolog_running)
+		track_script_flush_job(job_ptr->job_id);
+
 	info("%s: %pJ done", __func__, job_ptr);
 	return SLURM_SUCCESS;
 }
@@ -14792,27 +14790,6 @@ int sync_job_files(void)
 	_remove_defunct_batch_dirs(batch_dirs);
 	FREE_NULL_LIST(batch_dirs);
 	return SLURM_SUCCESS;
-}
-
-static int _kill_ctld_script(void *r, void *x)
-{
-	ctld_script_rec_t *rec = (ctld_script_rec_t *) r;
-	struct job_record *job_ptr = (struct job_record *) x;
-
-	xassert(rec);
-	xassert(job_ptr);
-
-	if (rec->job_id == job_ptr->job_id) {
-		debug("%s: killing running prolog/epilog script for completed job %"PRIu32", pid %"PRIu32"",
-		      __func__, job_ptr->job_id, rec->cpid);
-		kill(rec->cpid, SIGKILL);
-		/*
-		 * From now on the launcher thread should detect the pid as
-		 * dead and continue doing cleanup and removing itself from
-		 * the running scripts list.
-		 */
-	}
-	return 0;
 }
 
 /* Append to the batch_dirs list the job_id's associated with

@@ -1574,15 +1574,8 @@ static void *_start_stage_in(void *x)
 	bb_job_t *bb_job;
 	bool get_real_size = false;
 	DEF_TIMERS;
-	ctld_script_rec_t *ctld_script_rec =
-		xmalloc(sizeof(ctld_script_rec_t));
-	pthread_cond_t  timer_cond  = PTHREAD_COND_INITIALIZER;
-	pthread_mutex_t timer_mutex = PTHREAD_MUTEX_INITIALIZER;
-
-	ctld_script_rec->tid = pthread_self();
-	ctld_script_rec->timer_mutex = &timer_mutex;
-	ctld_script_rec->timer_cond = &timer_cond;
-	ctld_script_rec->job_id = stage_args->job_id;
+	track_script_rec_t *track_script_rec =
+		track_script_add(stage_args->job_id, 0, pthread_self());
 
 	setup_argv   = stage_args->args1;
 	data_in_argv = stage_args->args2;
@@ -1595,14 +1588,13 @@ static void *_start_stage_in(void *x)
 	START_TIMER;
 	resp_msg = run_command("setup",
 			       bb_state.bb_config.get_sys_state,
-			       setup_argv, timeout, ctld_script_rec,
-			       ctld_script_thd_list, &status);
+			       setup_argv, timeout, track_script_rec,
+			       &status);
 	END_TIMER;
 	info("%s: setup for job JobId=%u ran for %s",
 	     __func__, stage_args->job_id, TIME_STR);
 
-	if (WIFSIGNALED(status) && (WTERMSIG(status) == SIGKILL)
-	    && ctld_script_rec->cpid == -1) {
+	if (track_script_broadcast(track_script_rec, status)) {
 		info("%s: setup for JobId=%u terminated by slurmctld",
 		     __func__, stage_args->job_id);
 		free_command_argv(setup_argv);
@@ -1610,7 +1602,7 @@ static void *_start_stage_in(void *x)
 		xfree(resp_msg);
 		xfree(stage_args->pool);
 		xfree(stage_args);
-		/* Don't free ctld_script_rec, it is in ctld_script_thd_list */
+		/* Don't free track_script_rec, it is handled elsewhere */
 		return NULL;
 	}
 
@@ -1672,13 +1664,12 @@ static void *_start_stage_in(void *x)
 		START_TIMER;
 		resp_msg = run_command("dws_data_in",
 				       bb_state.bb_config.get_sys_state,
-				       data_in_argv, timeout, ctld_script_rec,
-				       ctld_script_thd_list, &status);
+				       data_in_argv, timeout, track_script_rec,
+				       &status);
 		END_TIMER;
 		info("%s: dws_data_in for JobId=%u ran for %s",
 		     __func__, stage_args->job_id, TIME_STR);
-		if (WIFSIGNALED(status) && (WTERMSIG(status) == SIGKILL)
-		    && ctld_script_rec->cpid == -1) {
+		if (track_script_broadcast(track_script_rec, status)) {
 			info("%s: dws_data_in for JobId=%u terminated by slurmctld",
 			     __func__, stage_args->job_id);
 			free_command_argv(setup_argv);
@@ -1686,8 +1677,9 @@ static void *_start_stage_in(void *x)
 			xfree(resp_msg);
 			xfree(stage_args->pool);
 			xfree(stage_args);
-			/* Don't free ctld_script_rec, it is in
-			 * ctld_script_thd_list */
+			/*
+			 * Don't free track_script_rec, it is handled elsewhere
+			 */
 			return NULL;
 		}
 		_log_script_argv(data_in_argv, resp_msg);
@@ -1724,15 +1716,14 @@ static void *_start_stage_in(void *x)
 		START_TIMER;
 		resp_msg2 = run_command("real_size",
 				        bb_state.bb_config.get_sys_state,
-				        size_argv, timeout, ctld_script_rec,
-					ctld_script_thd_list, &status);
+				        size_argv, timeout, track_script_rec,
+					&status);
 		END_TIMER;
 		if ((DELTA_TIMER > 200000) ||	/* 0.2 secs */
 		    bb_state.bb_config.debug_flag)
 			info("%s: real_size ran for %s", __func__, TIME_STR);
 
-		if (WIFSIGNALED(status) && (WTERMSIG(status) == SIGKILL)
-		    && ctld_script_rec->cpid == -1) {
+		if (track_script_broadcast(track_script_rec, status)) {
 			info("%s: real_size for JobId=%u terminated by slurmctld",
 			     __func__, stage_args->job_id);
 			free_command_argv(setup_argv);
@@ -1742,8 +1733,9 @@ static void *_start_stage_in(void *x)
 			free_command_argv(size_argv);
 			xfree(stage_args->pool);
 			xfree(stage_args);
-			/* Don't free ctld_script_rec, it is in
-			 * ctld_script_thd_list */
+			/*
+			 * Don't free track_script_rec, it is handled elsewhere
+			 */
 			return NULL;
 		}
 
@@ -1834,12 +1826,14 @@ static void *_start_stage_in(void *x)
 	}
 	unlock_slurmctld(job_write_lock);
 
-	xfree(ctld_script_rec);
 	xfree(resp_msg);
 	free_command_argv(setup_argv);
 	free_command_argv(data_in_argv);
 	xfree(stage_args->pool);
 	xfree(stage_args);
+
+	track_script_remove(pthread_self());
+
 	return NULL;
 }
 
@@ -1897,15 +1891,8 @@ static void *_start_stage_out(void *x)
 	bb_alloc_t *bb_alloc = NULL;
 	bb_job_t *bb_job = NULL;
 	DEF_TIMERS
-	ctld_script_rec_t *ctld_script_rec =
-		xmalloc(sizeof(ctld_script_rec_t));
-	pthread_cond_t  timer_cond  = PTHREAD_COND_INITIALIZER;
-	pthread_mutex_t timer_mutex = PTHREAD_MUTEX_INITIALIZER;
-
-	ctld_script_rec->tid = pthread_self();
-	ctld_script_rec->timer_mutex = &timer_mutex;
-	ctld_script_rec->timer_cond = &timer_cond;
-	ctld_script_rec->job_id = stage_args->job_id;
+	track_script_rec_t *track_script_rec =
+		track_script_add(stage_args->job_id, 0, pthread_self());
 
 	data_out_argv = stage_args->args1;
 	post_run_argv = stage_args->args2;
@@ -1918,8 +1905,8 @@ static void *_start_stage_out(void *x)
 	START_TIMER;
 	resp_msg = run_command("dws_post_run",
 			       bb_state.bb_config.get_sys_state,
-			       post_run_argv, timeout, ctld_script_rec,
-			       ctld_script_thd_list, &status);
+			       post_run_argv, timeout, track_script_rec,
+			       &status);
 	END_TIMER;
 	if ((DELTA_TIMER > 500000) ||	/* 0.5 secs */
 	    bb_state.bb_config.debug_flag) {
@@ -1927,8 +1914,7 @@ static void *_start_stage_out(void *x)
 		     __func__, stage_args->job_id, TIME_STR);
 	}
 
-	if (WIFSIGNALED(status) && (WTERMSIG(status) == SIGKILL)
-	    && ctld_script_rec->cpid == -1) {
+	if (track_script_broadcast(track_script_rec, status)) {
 		info("%s: dws_post_run for JobId=%u terminated by slurmctld",
 		     __func__, stage_args->job_id);
 		free_command_argv(post_run_argv);
@@ -1936,7 +1922,7 @@ static void *_start_stage_out(void *x)
 		xfree(resp_msg);
 		xfree(stage_args->pool);
 		xfree(stage_args);
-		/* Don't free ctld_script_rec, it is in ctld_script_thd_list */
+		/* Don't free track_script_rec, it is handled elsewhere */
 		return NULL;
 	}
 
@@ -1979,8 +1965,8 @@ static void *_start_stage_out(void *x)
 		xfree(resp_msg);
 		resp_msg = run_command("dws_data_out",
 				       bb_state.bb_config.get_sys_state,
-				       data_out_argv, timeout, ctld_script_rec,
-				       ctld_script_thd_list, &status);
+				       data_out_argv, timeout, track_script_rec,
+				       &status);
 		END_TIMER;
 		if ((DELTA_TIMER > 1000000) ||	/* 10 secs */
 		    bb_state.bb_config.debug_flag) {
@@ -1988,8 +1974,7 @@ static void *_start_stage_out(void *x)
 			     __func__, stage_args->job_id, TIME_STR);
 		}
 
-		if (WIFSIGNALED(status) && (WTERMSIG(status) == SIGKILL)
-		    && ctld_script_rec->cpid == -1) {
+		if (track_script_broadcast(track_script_rec, status)) {
 			info("%s: dws_data_out for JobId=%u terminated by slurmctld",
 			     __func__, stage_args->job_id);
 			free_command_argv(post_run_argv);
@@ -1997,8 +1982,9 @@ static void *_start_stage_out(void *x)
 			xfree(resp_msg);
 			xfree(stage_args->pool);
 			xfree(stage_args);
-			/* Don't free ctld_script_rec, it is in
-			 * ctld_script_thd_list */
+			/*
+			 * Don't free track_script_rec, it is handled elsewhere
+			 */
 			return NULL;
 		}
 
@@ -2081,11 +2067,13 @@ static void *_start_stage_out(void *x)
 	}
 	unlock_slurmctld(job_write_lock);
 
-	xfree(ctld_script_rec);
 	xfree(resp_msg);
 	free_command_argv(post_run_argv);
 	free_command_argv(data_out_argv);
 	xfree(stage_args);
+
+	track_script_remove(pthread_self());
+
 	return NULL;
 }
 
@@ -2156,15 +2144,8 @@ static void *_start_teardown(void *x)
 		NO_LOCK, WRITE_LOCK, NO_LOCK, NO_LOCK, NO_LOCK };
 	DEF_TIMERS;
 	bool hurry;
-	ctld_script_rec_t *ctld_script_rec =
-		xmalloc(sizeof(ctld_script_rec_t));
-	pthread_cond_t  timer_cond  = PTHREAD_COND_INITIALIZER;
-	pthread_mutex_t timer_mutex = PTHREAD_MUTEX_INITIALIZER;
-
-	ctld_script_rec->tid = pthread_self();
-	ctld_script_rec->timer_mutex = &timer_mutex;
-	ctld_script_rec->timer_cond = &timer_cond;
-	ctld_script_rec->job_id = teardown_args->job_id;
+	track_script_rec_t *track_script_rec =
+		track_script_add(teardown_args->job_id, 0, pthread_self());
 
 	teardown_argv = teardown_args->args1;
 
@@ -2179,14 +2160,13 @@ static void *_start_teardown(void *x)
 		timeout = DEFAULT_OTHER_TIMEOUT * 1000;
 	resp_msg = run_command("teardown",
 			       bb_state.bb_config.get_sys_state,
-			       teardown_argv, timeout, ctld_script_rec,
-			       ctld_script_thd_list, &status);
+			       teardown_argv, timeout, track_script_rec,
+			       &status);
 	END_TIMER;
 	info("%s: teardown for JobId=%u ran for %s",
 	     __func__, teardown_args->job_id, TIME_STR);
 
-	if (WIFSIGNALED(status) && (WTERMSIG(status) == SIGKILL)
-	    && ctld_script_rec->cpid == -1) {
+	if (track_script_broadcast(track_script_rec, status)) {
 		info("%s: teardown for JobId=%u terminated by slurmctld",
 		     __func__, teardown_args->job_id);
 		xfree(resp_msg);
@@ -2194,7 +2174,6 @@ static void *_start_teardown(void *x)
 		xfree(teardown_args);
 		return NULL;
 	}
-
 
 	_log_script_argv(teardown_argv, resp_msg);
 
@@ -2288,10 +2267,12 @@ static void *_start_teardown(void *x)
 		unlock_slurmctld(job_write_lock);
 	}
 
-	xfree(ctld_script_rec);
 	xfree(resp_msg);
 	free_command_argv(teardown_argv);
 	xfree(teardown_args);
+
+	track_script_remove(pthread_self());
+
 	return NULL;
 }
 
@@ -3300,7 +3281,7 @@ extern char *bb_p_get_status(uint32_t argc, char **argv)
 	for (i = 0; i < argc; i++)
 		script_argv[i + 1] = argv[i];
 	status_resp = run_command("dwstat", bb_state.bb_config.get_sys_status,
-				  script_argv, 2000, NULL, NULL, &status);
+				  script_argv, 2000, NULL, &status);
 	if (!WIFEXITED(status) || (WEXITSTATUS(status) != 0)) {
 		xfree(status_resp);
 		status_resp = xstrdup("Error running dwstat\n");
@@ -3650,7 +3631,7 @@ extern int bb_p_job_validate2(struct job_record *job_ptr, char **err_msg)
 	START_TIMER;
 	resp_msg = run_command("job_process",
 			       bb_state.bb_config.get_sys_state,
-			       script_argv, timeout, NULL, NULL, &status);
+			       script_argv, timeout, NULL, &status);
 	END_TIMER;
 	if ((DELTA_TIMER > 200000) ||	/* 0.2 secs */
 	    bb_state.bb_config.debug_flag)
@@ -4062,7 +4043,7 @@ extern int bb_p_job_begin(struct job_record *job_ptr)
 		START_TIMER;
 		resp_msg = run_command("paths",
 				       bb_state.bb_config.get_sys_state,
-				       script_argv, timeout, NULL, NULL,
+				       script_argv, timeout, NULL,
 				       &status);
 		END_TIMER;
 		if ((DELTA_TIMER > 200000) ||	/* 0.2 secs */
@@ -4176,9 +4157,7 @@ static void *_start_pre_run(void *x)
 	uint32_t timeout;
 	bool hold_job = false, nodes_ready = false;
 	DEF_TIMERS;
-	ctld_script_rec_t *ctld_script_rec;
-	pthread_cond_t  timer_cond  = PTHREAD_COND_INITIALIZER;
-	pthread_mutex_t timer_mutex = PTHREAD_MUTEX_INITIALIZER;
+	track_script_rec_t *track_script_rec;
 
 	/* Wait for node boot to complete */
 	while (!nodes_ready) {
@@ -4186,7 +4165,6 @@ static void *_start_pre_run(void *x)
 		job_ptr = find_job_record(pre_run_args->job_id);
 		if (!job_ptr || IS_JOB_COMPLETED(job_ptr)) {
 			unlock_slurmctld(job_read_lock);
-			xfree(ctld_script_rec);
 			return NULL;
 		}
 		if (test_job_nodes_ready(job_ptr))
@@ -4196,11 +4174,8 @@ static void *_start_pre_run(void *x)
 			sleep(60);
 	}
 
-	ctld_script_rec = xmalloc(sizeof(ctld_script_rec_t));
-	ctld_script_rec->tid = pthread_self();
-	ctld_script_rec->timer_mutex = &timer_mutex;
-	ctld_script_rec->timer_cond = &timer_cond;
-	ctld_script_rec->job_id = pre_run_args->job_id;
+	track_script_rec =
+		track_script_add(pre_run_args->job_id, 0, pthread_self());
 
 	if (pre_run_args->timeout)
 		timeout = pre_run_args->timeout * 1000;
@@ -4210,12 +4185,11 @@ static void *_start_pre_run(void *x)
 	START_TIMER;
 	resp_msg = run_command("dws_pre_run",
 			       bb_state.bb_config.get_sys_state,
-			       pre_run_args->args, timeout, ctld_script_rec,
-			       NULL, &status);
+			       pre_run_args->args, timeout, track_script_rec,
+			       &status);
 	END_TIMER;
 
-	if (WIFSIGNALED(status) && (WTERMSIG(status) == SIGKILL)
-	    && ctld_script_rec->cpid == -1) {
+	if (track_script_broadcast(track_script_rec, status)) {
 		info("%s: dws_pre_run for JobId=%u terminated by slurmctld",
 		     __func__, pre_run_args->job_id);
 		xfree(resp_msg);
@@ -4274,6 +4248,9 @@ static void *_start_pre_run(void *x)
 	xfree(resp_msg);
 	free_command_argv(pre_run_args->args);
 	xfree(pre_run_args);
+
+	track_script_remove(pthread_self());
+
 	return NULL;
 }
 
@@ -4760,15 +4737,8 @@ static void *_create_persistent(void *x)
 	int i, status = 0;
 	uint32_t timeout;
 	DEF_TIMERS;
-	ctld_script_rec_t *ctld_script_rec =
-		xmalloc(sizeof(ctld_script_rec_t));
-	pthread_cond_t  timer_cond  = PTHREAD_COND_INITIALIZER;
-	pthread_mutex_t timer_mutex = PTHREAD_MUTEX_INITIALIZER;
-
-	ctld_script_rec->tid = pthread_self();
-	ctld_script_rec->timer_mutex = &timer_mutex;
-	ctld_script_rec->timer_cond = &timer_cond;
-	ctld_script_rec->job_id = create_args->job_id;
+	track_script_rec_t *track_script_rec =
+		track_script_add(create_args->job_id, 0, pthread_self());
 
 	script_argv = xcalloc(20, sizeof(char *));	/* NULL terminated */
 	script_argv[0] = xstrdup("dw_wlm_cli");
@@ -4804,7 +4774,7 @@ static void *_create_persistent(void *x)
 	START_TIMER;
 	resp_msg = run_command("create_persistent",
 			       bb_state.bb_config.get_sys_state,
-			       script_argv, timeout, ctld_script_rec, NULL,
+			       script_argv, timeout, track_script_rec,
 			       &status);
 	_log_script_argv(script_argv, resp_msg);
 	free_command_argv(script_argv);
@@ -4812,8 +4782,7 @@ static void *_create_persistent(void *x)
 	info("create_persistent of %s ran for %s",
 	     create_args->name, TIME_STR);
 
-	if (WIFSIGNALED(status) && (WTERMSIG(status) == SIGKILL)
-	    && ctld_script_rec->cpid == -1) {
+	if (track_script_broadcast(track_script_rec, status)) {
 		info("%s: create_persistent for JobId=%u terminated by slurmctld",
 		     __func__, create_args->job_id);
 		xfree(resp_msg);
@@ -4914,6 +4883,9 @@ static void *_create_persistent(void *x)
 	}
 	xfree(resp_msg);
 	_free_create_args(create_args);
+
+	track_script_remove(pthread_self());
+
 	return NULL;
 }
 
@@ -4929,15 +4901,8 @@ static void *_destroy_persistent(void *x)
 	int status = 0;
 	uint32_t timeout;
 	DEF_TIMERS;
-	ctld_script_rec_t *ctld_script_rec =
-		xmalloc(sizeof(ctld_script_rec_t));
-	pthread_cond_t  timer_cond  = PTHREAD_COND_INITIALIZER;
-	pthread_mutex_t timer_mutex = PTHREAD_MUTEX_INITIALIZER;
-
-	ctld_script_rec->tid = pthread_self();
-	ctld_script_rec->timer_mutex = &timer_mutex;
-	ctld_script_rec->timer_cond = &timer_cond;
-	ctld_script_rec->job_id = destroy_args->job_id;
+	track_script_rec_t *track_script_rec =
+		track_script_add(destroy_args->job_id, 0, pthread_self());
 
 	slurm_mutex_lock(&bb_state.bb_mutex);
 	bb_alloc = bb_find_name_rec(destroy_args->name, destroy_args->user_id,
@@ -4966,21 +4931,20 @@ static void *_destroy_persistent(void *x)
 	START_TIMER;
 	resp_msg = run_command("destroy_persistent",
 			       bb_state.bb_config.get_sys_state,
-			       script_argv, timeout, ctld_script_rec,
-			       NULL, &status);
+			       script_argv, timeout, track_script_rec,
+			       &status);
 	_log_script_argv(script_argv, resp_msg);
 	free_command_argv(script_argv);
 	END_TIMER;
 	info("destroy_persistent of %s ran for %s",
 	     destroy_args->name, TIME_STR);
 
-	if (WIFSIGNALED(status) && (WTERMSIG(status) == SIGKILL)
-	    && ctld_script_rec->cpid == -1) {
+	if (track_script_broadcast(track_script_rec, status)) {
 		info("%s: destroy_persistent for JobId=%u terminated by slurmctld",
 		     __func__, destroy_args->job_id);
 		xfree(resp_msg);
 		_free_create_args(destroy_args);
-		/* Don't free ctld_script_rec, it is in ctld_script_thd_list */
+		/* Don't free track_script_rec, it is handled elsewhere */
 		return NULL;
 	}
 
@@ -5037,6 +5001,9 @@ static void *_destroy_persistent(void *x)
 	}
 	xfree(resp_msg);
 	_free_create_args(destroy_args);
+
+	track_script_remove(pthread_self());
+
 	return NULL;
 }
 
@@ -5063,7 +5030,7 @@ _bb_get_configs(int *num_ent, bb_state_t *state_ptr, uint32_t timeout)
 	START_TIMER;
 	resp_msg = run_command("show_configurations",
 			       state_ptr->bb_config.get_sys_state,
-			       script_argv, timeout, NULL, NULL, &status);
+			       script_argv, timeout, NULL, &status);
 	END_TIMER;
 	if (bb_state.bb_config.debug_flag)
 		debug("%s: show_configurations ran for %s", __func__, TIME_STR);
@@ -5131,7 +5098,7 @@ _bb_get_instances(int *num_ent, bb_state_t *state_ptr, uint32_t timeout)
 	START_TIMER;
 	resp_msg = run_command("show_instances",
 			       state_ptr->bb_config.get_sys_state,
-			       script_argv, timeout, NULL, NULL, &status);
+			       script_argv, timeout, NULL, &status);
 	END_TIMER;
 	if (bb_state.bb_config.debug_flag)
 		debug("%s: show_instances ran for %s", __func__, TIME_STR);
@@ -5198,7 +5165,7 @@ _bb_get_pools(int *num_ent, bb_state_t *state_ptr, uint32_t timeout)
 	START_TIMER;
 	resp_msg = run_command("pools",
 			       state_ptr->bb_config.get_sys_state,
-			       script_argv, timeout, NULL, NULL, &status);
+			       script_argv, timeout, NULL, &status);
 	END_TIMER;
 	if (bb_state.bb_config.debug_flag) {
 		/* Only log pools data if different to limit volume of logs */
@@ -5263,7 +5230,7 @@ _bb_get_sessions(int *num_ent, bb_state_t *state_ptr, uint32_t timeout)
 	START_TIMER;
 	resp_msg = run_command("show_sessions",
 			       state_ptr->bb_config.get_sys_state,
-			       script_argv, timeout, NULL, NULL, &status);
+			       script_argv, timeout, NULL, &status);
 	END_TIMER;
 	if (bb_state.bb_config.debug_flag)
 		debug("%s: show_sessions ran for %s", __func__, TIME_STR);

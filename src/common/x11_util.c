@@ -178,7 +178,7 @@ extern char *x11_get_xauth(void)
 	xauth_argv[2] = xstrdup(getenv("DISPLAY"));
 
 	result = run_command("xauth", XAUTH_PATH, xauth_argv, 10000, NULL,
-			     NULL, &status);
+			     &status);
 
 	debug2("%s: result from xauth: %s", __func__, result);
 
@@ -226,7 +226,7 @@ extern int x11_set_xauth(char *xauthority, char *cookie,
 	xassert(i < 10);
 
 	result = run_command("xauth", XAUTH_PATH, xauth_argv, 10000, NULL,
-			     NULL, &status);
+			     &status);
 
 	free_command_argv(xauth_argv);
 
@@ -253,7 +253,7 @@ extern int x11_delete_xauth(char *xauthority, char *host, uint16_t display)
 	xassert(i < 10);
 
 	result = run_command("xauth", XAUTH_PATH, xauth_argv, 10000, NULL,
-			     NULL, &status);
+			     &status);
 
 	free_command_argv(xauth_argv);
 

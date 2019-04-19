@@ -1,8 +1,8 @@
 /*****************************************************************************\
- *  run_command.h - run a command asynchronously and return output
+ *  track_script.h - Track scripts running asynchronously
  *****************************************************************************
- *  Copyright (C) 2014-2017 SchedMD LLC.
- *  Written by Morris Jette <jette@schedmd.com>
+ *  Copyright (C) 2019 SchedMD LLC.
+ *  Written by Felip Moll <felip@schedmd.com>
  *
  *  This file is part of Slurm, a resource management program.
  *  For details, see <https://slurm.schedmd.com/>.
@@ -34,32 +34,38 @@
  *  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301  USA.
 \*****************************************************************************/
 
-#ifndef __RUN_COMMAND_H__
-#define __RUN_COMMAND_H__
+#ifndef __TRACK_SCRIPT_H__
+#define __TRACK_SCRIPT_H__
 
-#include "src/common/track_script.h"
+#include "config.h"
 
-/* used to terminate any outstanding commands */
-extern void run_command_shutdown(void);
+#include <inttypes.h>
 
-/* Return count of child processes */
-extern int run_command_count(void);
+typedef struct {
+	uint32_t job_id;
+	pid_t cpid;
+	pthread_t tid;
+	pthread_mutex_t timer_mutex;
+	pthread_cond_t timer_cond;
+} track_script_rec_t;
 
-/* Execute a command, wait for termination and return its stdout.
- * script_type IN - Type of program being run (e.g. "StartStageIn")
- * script_path IN - Fully qualified pathname of the program to execute
- * script_args IN - Arguments to the script
- * max_wait IN - Maximum time to wait in milliseconds,
- *		 -1 for no limit (asynchronous)
- * track_script_rec IN - Tracking details for this execution
- * status OUT - Job exit code
- * Return stdout+stderr of spawned program, value must be xfreed. */
-extern char *run_command(char *script_type, char *script_path,
-			 char **script_argv, int max_wait,
-			 track_script_rec_t *track_script_rec,
-			 int *status);
+extern void track_script_init(void);
 
-/* Free an array of xmalloced records. The array must be NULL terminated. */
-extern void free_command_argv(char **script_argv);
+extern void track_script_fini(void);
 
-#endif	/* __RUN_COMMAND_H__ */
+extern void track_script_flush(void);
+
+extern void track_script_flush_job(uint32_t job_id);
+
+extern track_script_rec_t *track_script_add(
+	uint32_t job_id, pid_t cpid, pthread_t tid);
+
+/*
+ */
+extern bool track_script_broadcast(track_script_rec_t *track_script_rec,
+				   int status);
+
+/* Remove this job from the list of jobs currently running a script */
+extern void track_script_remove(pthread_t tid);
+
+#endif

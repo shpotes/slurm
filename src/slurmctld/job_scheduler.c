@@ -69,6 +69,7 @@
 #include "src/common/strlcpy.h"
 #include "src/common/parse_time.h"
 #include "src/common/timers.h"
+#include "src/common/track_script.h"
 #include "src/common/uid.h"
 #include "src/common/xassert.h"
 #include "src/common/xstring.h"
@@ -123,7 +124,6 @@ static bool	_job_runnable_test1(struct job_record *job_ptr,
 				    bool clear_start);
 static bool	_job_runnable_test2(struct job_record *job_ptr,
 				    bool check_min_time);
-static int      _match_tid(void *object, void *key);
 static void *	_run_epilog(void *arg);
 static void *	_run_prolog(void *arg);
 static bool	_scan_depend(List dependency_list, uint32_t job_id);
@@ -3817,9 +3817,7 @@ static void *_run_epilog(void *arg)
 	int i, status, wait_rc;
 	char *argv[2];
 	uint16_t tm;
-	ctld_script_rec_t *ctld_script_rec;
-	pthread_cond_t  timer_cond  = PTHREAD_COND_INITIALIZER;
-	pthread_mutex_t timer_mutex = PTHREAD_MUTEX_INITIALIZER;
+	track_script_rec_t *track_script_rec;
 
 	argv[0] = epilog_arg->epilog_slurmctld;
 	argv[1] = NULL;
@@ -3836,14 +3834,9 @@ static void *_run_epilog(void *arg)
 		exit(127);
 	}
 
-	/* Add this process to the ctld_script_thd_list */
-	ctld_script_rec = xmalloc(sizeof(ctld_script_rec_t));
-	ctld_script_rec->tid = pthread_self();
-	ctld_script_rec->timer_mutex = &timer_mutex;
-	ctld_script_rec->timer_cond = &timer_cond;
-	ctld_script_rec->job_id = epilog_arg->job_id;
-	ctld_script_rec->cpid = cpid;
-	list_append(ctld_script_thd_list, ctld_script_rec);
+	/* Start tracking this new process */
+	track_script_rec = track_script_add(epilog_arg->job_id,
+					    cpid, pthread_self());
 
 	/* Prolog and epilog use the same timeout
 	 */
@@ -3860,13 +3853,7 @@ static void *_run_epilog(void *arg)
 		}
 	}
 
-	/* Possible race accessing ctld_script_rec? */
-	if (WIFSIGNALED(status) && (WTERMSIG(status) == SIGKILL)
-	    && ctld_script_rec->cpid == -1) {
-		slurm_mutex_lock(&timer_mutex);
-		slurm_cond_broadcast(&timer_cond);
-		slurm_mutex_unlock(&timer_mutex);
-
+	if (track_script_broadcast(track_script_rec, status)) {
 		info("epilog_slurmctld JobId=%u epilog killed by signal %u",
 		     epilog_arg->job_id, WTERMSIG(status));
 
@@ -3905,10 +3892,10 @@ fini:	lock_slurmctld(job_write_lock);
 	xfree(epilog_arg);
 
 	/*
-	 * Use pthread_self here instead of ctld_script_rec->tid to avoid any
+	 * Use pthread_self here instead of track_script_rec->tid to avoid any
 	 * potential for race.
 	 */
-	remove_ctld_script(pthread_self());
+	track_script_remove(pthread_self());
 	return NULL;
 }
 
@@ -4175,13 +4162,11 @@ static void *_wait_boot(void *arg)
 	int i, total_node_cnt, wait_node_cnt;
 	uint32_t save_job_id = job_ptr->job_id;
 	bool job_timeout = false;
-	ctld_script_rec_t *ctld_script_rec =
-		xmalloc(sizeof(ctld_script_rec_t));
 
-	/* Add this to the ctld_script_thd_list first */
-	ctld_script_rec->tid = pthread_self();
-	ctld_script_rec->job_id = wait_boot_arg->job_id;
-	list_append(ctld_script_thd_list, ctld_script_rec);
+	/*
+	 * This adds the process to the list, we don't need the return pointer
+	 */
+	(void)track_script_add(wait_boot_arg->job_id, 0, pthread_self());
 
 	do {
 		sleep(5);
@@ -4192,7 +4177,7 @@ static void *_wait_boot(void *arg)
 			error("JobId=%u vanished while waiting for node boot",
 			      save_job_id);
 			unlock_slurmctld(job_write_lock);
-			remove_ctld_script(pthread_self());
+			track_script_remove(pthread_self());
 			return NULL;
 		}
 		if (IS_JOB_PENDING(job_ptr) ||	/* Job requeued or killed */
@@ -4201,7 +4186,7 @@ static void *_wait_boot(void *arg)
 			verbose("%pJ no longer waiting for node boot",
 				job_ptr);
 			unlock_slurmctld(job_write_lock);
-			remove_ctld_script(pthread_self());
+			track_script_remove(pthread_self());
 			return NULL;
 		}
 		for (i = 0, node_ptr = node_record_table_ptr;
@@ -4238,28 +4223,10 @@ static void *_wait_boot(void *arg)
 
 	FREE_NULL_BITMAP(wait_boot_arg->node_bitmap);
 	xfree(arg);
-	remove_ctld_script(pthread_self());
+	track_script_remove(pthread_self());
 	return NULL;
 }
 #endif
-
-static int _match_tid(void *object, void *key)
-{
-	pthread_t tid0 = ((ctld_script_rec_t *)object)->tid;
-	pthread_t tid1 = *(pthread_t *)key;
-
-	return (tid0 == tid1);
-}
-
-/* Remove this job from the list of jobs currently running a script */
-extern void remove_ctld_script(pthread_t tid)
-{
-	if (!list_delete_all(ctld_script_thd_list, _match_tid, &tid))
-		error("%s: thread %lu not found", __func__, tid);
-	else
-		debug2("%s: slurmctld thread running script from job removed",
-		       __func__);
-}
 
 /*
  * prolog_slurmctld - execute the prolog_slurmctld for a job that has just
@@ -4302,9 +4269,7 @@ static void *_run_prolog(void *arg)
 	time_t now = time(NULL);
 	uint16_t resume_timeout = slurm_get_resume_timeout();
 	uint16_t tm;
-	ctld_script_rec_t *ctld_script_rec;
-	pthread_cond_t  timer_cond  = PTHREAD_COND_INITIALIZER;
-	pthread_mutex_t timer_mutex = PTHREAD_MUTEX_INITIALIZER;
+	track_script_rec_t *track_script_rec;
 
 	lock_slurmctld(config_read_lock);
 	job_id = job_ptr->job_id;
@@ -4337,15 +4302,9 @@ static void *_run_prolog(void *arg)
 		exit(127);
 	}
 
-	/* Add this new process to the ctld_script_thd_list */
-	ctld_script_rec = xmalloc(sizeof(ctld_script_rec_t));
-	ctld_script_rec->tid = pthread_self();
-	ctld_script_rec->timer_mutex = &timer_mutex;
-	ctld_script_rec->timer_cond = &timer_cond;
-	ctld_script_rec->job_id = job_ptr->job_id;
-	ctld_script_rec->cpid = cpid;
-	list_append(ctld_script_thd_list, ctld_script_rec);
-
+	/* Start tracking this new process */
+	track_script_rec = track_script_add(job_ptr->job_id,
+					    cpid, pthread_self());
 
 	tm = slurm_get_prolog_timeout();
 	while (1) {
@@ -4360,12 +4319,7 @@ static void *_run_prolog(void *arg)
 		}
 	}
 
-	if (WIFSIGNALED(status) && (WTERMSIG(status) == SIGKILL)
-	    && ctld_script_rec->cpid == -1) {
-		slurm_mutex_lock(&timer_mutex);
-		slurm_cond_broadcast(&timer_cond);
-		slurm_mutex_unlock(&timer_mutex);
-
+	if (track_script_broadcast(track_script_rec, status)) {
 		info("prolog_slurmctld JobId=%u prolog killed by signal %u",
 		     job_id, WTERMSIG(status));
 
@@ -4437,10 +4391,10 @@ fini:	xfree(argv[0]);
 	FREE_NULL_BITMAP(node_bitmap);
 
 	/*
-	 * Use pthread_self here instead of ctld_script_rec->tid to avoid any
+	 * Use pthread_self here instead of track_script_rec->tid to avoid any
 	 * potential for race.
 	 */
-	remove_ctld_script(pthread_self());
+	track_script_remove(pthread_self());
 	return NULL;
 }
 
